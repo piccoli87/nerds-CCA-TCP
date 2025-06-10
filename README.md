@@ -1,4 +1,5 @@
 Algoritmo de Controle de Congestionamento TCP (CCA TCP) baseado no TCP CUBIC e TCP CDG.
+
 Nome do CCA TCP: cubic_d
 Código fonte: tcp_cubic_d.c
 Kernel: 5.13.12 (disponíl em: https://github.com/google/bbr.git)

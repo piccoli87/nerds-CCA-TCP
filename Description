@@ -1,1 +1,14 @@
+Algoritmo de Controle de Congestionamento TCP (CCA TCP) baseado no TCP CUBIC e TCP CDG.
+Nome do CCA TCP: cubic_d
+Código fonte: tcp_cubic_d.c
+Kernel: 5.13.12
+disponíl em: https://github.com/google/bbr.git
+
+O CCA TCP cubic_d herda comportamento de busca e expansão da janela de transmissão (CWND) do TCP cubic e 
+avaliação da variação dos valores de RTT, provenienteo do CCA TCP CDG. A proposta é fornecer ao CCA TCP cubic_d
+ferramentas para diferenciar perdas de pacotes por congestionamento de outras perdas provenientes de BER,
+podendo desta forma atingir uma maior adaptabilidade a operação em meios que possuam naturalmente uma SNR
+(Relação sinal/ruído) menor (mais relaxada!).
+
+
 

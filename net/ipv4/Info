@@ -1,1 +1,2 @@
-
+Os arquivo: tcp_cubic_d.c; kconfig; Makefile, devem ser adicionados ao diretório: "net/ipv4/" do kernel 5.13.12 
+para correta compilação. 

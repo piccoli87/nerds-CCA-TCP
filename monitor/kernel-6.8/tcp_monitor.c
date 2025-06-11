@@ -15,7 +15,7 @@
 #include <linux/spinlock.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Seu Nome");
+MODULE_AUTHOR("Pedro P. Pecolo Filho");
 MODULE_DESCRIPTION("Monitor de métricas TCP para kernel 6.8+");
 MODULE_VERSION("1.1");
 

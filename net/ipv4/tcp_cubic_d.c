@@ -297,6 +297,6 @@ static void __exit cubic_d_unregister(void)
 module_init(cubic_d_register);
 module_exit(cubic_d_unregister);
 
-MODULE_AUTHOR("Seu Nome");
+MODULE_AUTHOR("Pedro P. Pecolo Filho");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("TCP CUBIC-D with Delay Variation Monitoring and BER Loss Detection");

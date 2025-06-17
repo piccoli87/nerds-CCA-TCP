@@ -11,6 +11,7 @@
 
 **Para visualizar as métricas coletadas, execute:**
 *cat /proc/tcp_metrics*         
+*cat /proc/tcp_metrics | tail -n 1*
 
 **Para remover o módulo, execute:**
 *sudo rmmod tcp_monitor*        

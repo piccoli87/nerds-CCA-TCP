@@ -36,7 +36,7 @@ static int tcp_metrics_show(struct seq_file *m, void *v)
     struct sock *sk;
     int i;
 
-    seq_puts(m, "SADDR           DADDR           SPORT DPORT CWND   SRTT    RTTVAR RET SNDWND  RCVWND  ALG       TIMESTAMP\n");
+    seq_puts(m, "SADDR           DADDR           SPORT DPORT CWND   SRTT    RTTVAR RET SNDWND  RCVWND   DSCP  ECN  ALG       TIMESTAMP\n");
 
     if (!monitor_netns) {
         seq_puts(m, "Error: namespace not initialized\n");
@@ -52,6 +52,7 @@ static int tcp_metrics_show(struct seq_file *m, void *v)
             u16 sport, dport;
             u32 cwnd, srtt, rttvar, retrans, sndwnd, rcvwnd;
             u64 timestamp;
+            u8 tos;
             const char *alg;
 
             // Filtra apenas conexões IPv4, TCP estabelecido e do mesmo namespace
@@ -80,15 +81,18 @@ static int tcp_metrics_show(struct seq_file *m, void *v)
             sndwnd = sk->sk_sndbuf;
             rcvwnd = sk->sk_rcvbuf;
             timestamp = ktime_get_ns();
+            tos = inet->tos;
+            u8 dscp = tos >> 2;
+            u8 ecn = tos & 0x03;
 
             alg = inet_csk(sk)->icsk_ca_ops->name;
             if (strncmp(alg, "tcp_", 4) == 0)
                 alg += 4;  // remove o prefixo "tcp_"
 
-            seq_printf(m, "%-15pI4 %-15pI4 %5u %5u %5u %7u %7u %3u %7u %7u %-10s %llu\n",
+            seq_printf(m, "%-15pI4 %-15pI4 %5u %5u %5u %7u %7u %3u %7u %7u %4u %3u %-10s %llu\n",
                        &inet->inet_saddr, &inet->inet_daddr,
                        sport, dport, cwnd, srtt, rttvar, retrans, sndwnd, rcvwnd,
-                       alg, timestamp);
+                       dscp, ecn, alg, timestamp);
         }
     }
     rcu_read_unlock();

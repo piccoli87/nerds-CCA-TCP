@@ -6,12 +6,17 @@
 **Para carregar o módulo, execute:**
 *sudo insmod tcp_monitor.ko*   
 
+**Se quiser passar filtros de IP:**
+*sudo insmod tcp_monitor.ko src_ip=10.0.0.1 dst_ip=10.0.0.2*
+
 **Para ver mensagens do kernel, execute:**
 *sudo dmesg*                       
 
 **Para visualizar as métricas coletadas, execute:**
 *cat /proc/tcp_metrics*         
 *cat /proc/tcp_metrics | tail -n 1*
+**Para melhor alinhamento:**
+*cat /proc/tcp_metrics | column -t*
 
 **Para visualizar o cabeçalho e a última métrica, execute:**
 *awk 'NR==1 {first=$0} {last=$0} END {print "First:", first; print "Last:", last}' /proc/tcp_metrics*

@@ -1,212 +1,154 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/version.h>
-#include <linux/netdevice.h>
-#include <linux/skbuff.h>
-#include <linux/tcp.h>
-#include <linux/ip.h>
-#include <net/tcp.h>
-#include <linux/kprobes.h>
-#include <linux/hash.h>
-#include <linux/jhash.h>
+#include <linux/init.h>
+#include <linux/inet.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include <linux/slab.h>
-#include <linux/spinlock.h>
+#include <linux/net.h>
+#include <linux/in.h>
+#include <net/sock.h>
+#include <net/inet_sock.h>
+#include <net/tcp.h>
+#include <linux/nsproxy.h>
+#include <net/net_namespace.h>
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Pedro P. Pecolo Filho");
-MODULE_DESCRIPTION("Monitor de métricas TCP para kernel 6.8+");
-MODULE_VERSION("1.1");
+#define PROC_NAME "tcp_metrics"
 
-#define TCP_CA_NAME_MAX 16
+static char *src_ip = NULL;
+static char *dst_ip = NULL;
 
-struct tcp_metrics {
-    u32 saddr, daddr;
-    u16 sport, dport;
-    u32 cwnd;
-    u32 srtt_us;
-    u32 rttvar_us;
-    u32 retrans;
-    u32 snd_wnd;
-    u32 rcv_wnd;
-    char ca_name[TCP_CA_NAME_MAX];
-    struct hlist_node __node;
-};
+module_param(src_ip, charp, 0);
+MODULE_PARM_DESC(src_ip, "Source IP address filter");
 
-#define METRICS_HASH_BITS 8
-static DEFINE_HASHTABLE(tcp_metrics_hash, METRICS_HASH_BITS);
-static DEFINE_SPINLOCK(metrics_lock);
+module_param(dst_ip, charp, 0);
+MODULE_PARM_DESC(dst_ip, "Destination IP address filter");
 
-static u32 metrics_hash_key(__be32 s, __be32 d, __be16 sp, __be16 dp)
+static __be32 src_ip_be = 0;
+static __be32 dst_ip_be = 0;
+
+static struct net *monitor_netns = NULL;
+
+static int tcp_metrics_show(struct seq_file *m, void *v)
 {
-    return jhash_3words((__force u32)s, (__force u32)d,
-                        (__force u32)(sp << 16 | dp), 0);
-}
+    struct inet_hashinfo *hashinfo = &tcp_hashinfo;
+    struct hlist_nulls_node *node;
+    struct sock *sk;
+    int i;
 
-static void update_metrics(const struct sock *sk)
-{
-    struct tcp_sock *tp = tcp_sk(sk);
-    struct inet_connection_sock *icsk = inet_csk(sk);
-    struct tcp_metrics *tm;
-    u32 key;
+    seq_puts(m, "SADDR           DADDR           SPORT DPORT CWND   SRTT    RTTVAR RET SNDWND  RCVWND  ALG       TIMESTAMP\n");
 
-    if (!sk || !tp || !icsk)
-        return;
+    if (!monitor_netns) {
+        seq_puts(m, "Error: namespace not initialized\n");
+        return 0;
+    }
 
-    key = metrics_hash_key(inet_sk(sk)->inet_saddr,
-                           inet_sk(sk)->inet_daddr,
-                           inet_sk(sk)->inet_sport,
-                           inet_sk(sk)->inet_dport);
+    rcu_read_lock();
+    for (i = 0; i <= hashinfo->ehash_mask; i++) {
+        struct hlist_nulls_head *head = &hashinfo->ehash[i].chain;
+        hlist_nulls_for_each_entry_rcu(sk, node, head, __sk_common.skc_nulls_node) {
+            struct inet_sock *inet;
+            struct tcp_sock *tp;
+            u16 sport, dport;
+            u32 cwnd, srtt, rttvar, retrans, sndwnd, rcvwnd;
+            u64 timestamp;
+            const char *alg;
 
-    spin_lock(&metrics_lock);
-    hash_for_each_possible(tcp_metrics_hash, tm, __node, key) {
-        if (tm->saddr == inet_sk(sk)->inet_saddr &&
-            tm->daddr == inet_sk(sk)->inet_daddr &&
-            tm->sport == ntohs(inet_sk(sk)->inet_sport) &&
-            tm->dport == ntohs(inet_sk(sk)->inet_dport)) {
+            // Filtra apenas conexões IPv4, TCP estabelecido e do mesmo namespace
+            if (sk->sk_family != AF_INET)
+                continue;
+            if (sk->sk_state != TCP_ESTABLISHED)
+                continue;
+            if (sock_net(sk) != monitor_netns)
+                continue;
 
-            tm->cwnd = tp->snd_cwnd;
-            tm->srtt_us = tp->srtt_us;
-            tm->rttvar_us = tp->rttvar_us;
-            tm->retrans = tp->retrans_out;
-            tm->snd_wnd = tp->snd_wnd;
-            tm->rcv_wnd = tp->rcv_wnd;
-            strncpy(tm->ca_name, icsk->icsk_ca_ops ? icsk->icsk_ca_ops->name : "unknown", TCP_CA_NAME_MAX);
-            tm->ca_name[TCP_CA_NAME_MAX - 1] = '\0';
-            spin_unlock(&metrics_lock);
-            return;
+            inet = inet_sk(sk);
+
+            // Filtro por IPs, se definidos
+            if ((src_ip_be && inet->inet_saddr != src_ip_be) ||
+                (dst_ip_be && inet->inet_daddr != dst_ip_be))
+                continue;
+
+            tp = tcp_sk(sk);
+
+            sport = ntohs(inet->inet_sport);
+            dport = ntohs(inet->inet_dport);
+            cwnd = tp->snd_cwnd;
+            srtt = tp->srtt_us >> 3;  // srtt_us is fixed point with 3 bits fraction
+            rttvar = tp->mdev_us >> 3;
+            retrans = tp->retrans_out;
+            sndwnd = sk->sk_sndbuf;
+            rcvwnd = sk->sk_rcvbuf;
+            timestamp = ktime_get_ns();
+
+            alg = inet_csk(sk)->icsk_ca_ops->name;
+            if (strncmp(alg, "tcp_", 4) == 0)
+                alg += 4;  // remove o prefixo "tcp_"
+
+            seq_printf(m, "%-15pI4 %-15pI4 %5u %5u %5u %7u %7u %3u %7u %7u %-10s %llu\n",
+                       &inet->inet_saddr, &inet->inet_daddr,
+                       sport, dport, cwnd, srtt, rttvar, retrans, sndwnd, rcvwnd,
+                       alg, timestamp);
         }
     }
+    rcu_read_unlock();
 
-    tm = kmalloc(sizeof(*tm), GFP_ATOMIC);
-    if (!tm) {
-        spin_unlock(&metrics_lock);
-        return;
-    }
-
-    tm->saddr = inet_sk(sk)->inet_saddr;
-    tm->daddr = inet_sk(sk)->inet_daddr;
-    tm->sport = ntohs(inet_sk(sk)->inet_sport);
-    tm->dport = ntohs(inet_sk(sk)->inet_dport);
-    tm->cwnd = tp->snd_cwnd;
-    tm->srtt_us = tp->srtt_us;
-    tm->rttvar_us = tp->rttvar_us;
-    tm->retrans = tp->retrans_out;
-    tm->snd_wnd = tp->snd_wnd;
-    tm->rcv_wnd = tp->rcv_wnd;
-    strncpy(tm->ca_name, icsk->icsk_ca_ops ? icsk->icsk_ca_ops->name : "unknown", TCP_CA_NAME_MAX);
-    tm->ca_name[TCP_CA_NAME_MAX - 1] = '\0';
-
-    hash_add(tcp_metrics_hash, &tm->__node, key);
-    spin_unlock(&metrics_lock);
-}
-
-static struct kprobe kp_retrans = { .symbol_name = "tcp_retransmit_skb" };
-static struct kprobe kp_xmit   = { .symbol_name = "tcp_write_xmit" };
-static struct kprobe kp_ack    = { .symbol_name = "tcp_ack" };
-
-static int handler_retrans(struct kprobe *p, struct pt_regs *regs)
-{
-    struct sock *sk = (struct sock *)regs->di;
-    if (sk) {
-        printk(KERN_INFO "TCP retransmission: %pI4:%u -> %pI4:%u\n",
-               &inet_sk(sk)->inet_saddr, ntohs(inet_sk(sk)->inet_sport),
-               &inet_sk(sk)->inet_daddr, ntohs(inet_sk(sk)->inet_dport));
-        update_metrics(sk);
-    }
     return 0;
 }
 
-static int handler_xmit(struct kprobe *p, struct pt_regs *regs)
+static int tcp_metrics_open(struct inode *inode, struct file *file)
 {
-    struct sock *sk = (struct sock *)regs->di;
-    if (sk) update_metrics(sk);
-    return 0;
+    return single_open(file, tcp_metrics_show, NULL);
 }
 
-static int handler_ack(struct kprobe *p, struct pt_regs *regs)
-{
-    struct sock *sk = (struct sock *)regs->di;
-    if (sk) update_metrics(sk);
-    return 0;
-}
-
-static int proc_show(struct seq_file *m, void *v)
-{
-    struct tcp_metrics *tm;
-    unsigned bkt;
-    seq_printf(m, "SADDR       DADDR       SPORT DPORT CWND  SRTT  RTTVAR RET  SNDWND RCVWND ALG\n");
-    spin_lock(&metrics_lock);
-    hash_for_each(tcp_metrics_hash, bkt, tm, __node) {
-        seq_printf(m, "%pI4 %pI4 %5u %5u %4u %6u %7u %4u %7u %7u %s\n",
-                   &tm->saddr, &tm->daddr, tm->sport, tm->dport,
-                   tm->cwnd, tm->srtt_us, tm->rttvar_us,
-                   tm->retrans, tm->snd_wnd, tm->rcv_wnd,
-                   tm->ca_name);
-    }
-    spin_unlock(&metrics_lock);
-    return 0;
-}
-
-static int proc_open(struct inode *i, struct file *f)
-{
-    return single_open(f, proc_show, NULL);
-}
-
-static const struct proc_ops proc_fops = {
-    .proc_open    = proc_open,
-    .proc_read    = seq_read,
-    .proc_lseek   = seq_lseek,
+static const struct proc_ops tcp_metrics_fops = {
+    .proc_open = tcp_metrics_open,
+    .proc_read = seq_read,
+    .proc_lseek = seq_lseek,
     .proc_release = single_release,
 };
 
 static int __init tcp_monitor_init(void)
 {
-    int ret;
-    printk(KERN_INFO "[tcp_monitor_68] initializing...\n");
+    struct proc_dir_entry *entry;
 
-    kp_retrans.pre_handler = handler_retrans;
-    kp_xmit.pre_handler   = handler_xmit;
-    kp_ack.pre_handler    = handler_ack;
+    pr_info("tcp_monitor: iniciando módulo...\n");
 
-    ret = register_kprobe(&kp_retrans);
-    if (ret) return ret;
-    ret = register_kprobe(&kp_xmit);
-    if (ret) {
-        unregister_kprobe(&kp_retrans);
-        return ret;
-    }
-    ret = register_kprobe(&kp_ack);
-    if (ret) {
-        unregister_kprobe(&kp_retrans);
-        unregister_kprobe(&kp_xmit);
-        return ret;
+    // Armazena o namespace atual do processo que carregou o módulo
+    monitor_netns = get_net(current->nsproxy->net_ns);
+
+    if (src_ip && !in4_pton(src_ip, -1, (u8 *)&src_ip_be, -1, NULL)) {
+        pr_err("tcp_monitor: IP de origem inválido: %s\n", src_ip);
+        return -EINVAL;
     }
 
-    proc_create("tcp_metrics", 0, NULL, &proc_fops);
+    if (dst_ip && !in4_pton(dst_ip, -1, (u8 *)&dst_ip_be, -1, NULL)) {
+        pr_err("tcp_monitor: IP de destino inválido: %s\n", dst_ip);
+        return -EINVAL;
+    }
+
+    entry = proc_create(PROC_NAME, 0, NULL, &tcp_metrics_fops);
+    if (!entry) {
+        pr_err("tcp_monitor: falha ao criar /proc/%s\n", PROC_NAME);
+        put_net(monitor_netns);  // libera se falhar
+        return -ENOMEM;
+    }
+
+    pr_info("tcp_monitor: monitorando conexões TCP no namespace atual\n");
     return 0;
 }
 
 static void __exit tcp_monitor_exit(void)
 {
-    struct tcp_metrics *tm;
-    struct hlist_node *tmp;
-    unsigned bkt;
-
-    printk(KERN_INFO "[tcp_monitor_68] exiting...\n");
-    unregister_kprobe(&kp_retrans);
-    unregister_kprobe(&kp_xmit);
-    unregister_kprobe(&kp_ack);
-    remove_proc_entry("tcp_metrics", NULL);
-
-    spin_lock(&metrics_lock);
-    hash_for_each_safe(tcp_metrics_hash, bkt, tmp, tm, __node) {
-        hash_del(&tm->__node);
-        kfree(tm);
-    }
-    spin_unlock(&metrics_lock);
+    remove_proc_entry(PROC_NAME, NULL);
+    if (monitor_netns)
+        put_net(monitor_netns);
+    pr_info("tcp_monitor: módulo removido\n");
 }
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Adaptado por ChatGPT");
+MODULE_DESCRIPTION("TCP metrics monitor (filtra por namespace de rede e identifica algoritmo)");
 
 module_init(tcp_monitor_init);
 module_exit(tcp_monitor_exit);

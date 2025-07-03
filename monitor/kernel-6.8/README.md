@@ -45,7 +45,9 @@
 
 ## 🧠 Exemplo interpretado:
 
-**172.16.30.92    142.250.0.188   60772  5228   10   793322  290165   0  87380   87380   cubic     169516884622211**
+**SADDR           DADDR         SPORT    DPORT   CWND   SRTT    RTTVAR   RET  SNDWND  RCVWND   ALG       TIMESTAMP**
+| ------------|--------------- | -------| ----- | ----|--------|--------|----|-------|-------|-------|------------------|
+|172.16.30.92 |  142.250.0.188 |  60772 |  5228 | 10  | 793322 | 290165 |  0 | 87380 | 87380 | cubic |  169516884622211 |
 
 * a) Essa conexão TCP foi estabelecida entre o IP local 172.16.30.92 e o IP remoto 142.250.0.188, usando a porta de origem 60772 e a porta de destino 5228. *
 * b) Está usando o algoritmo de congestionamento cubic. *

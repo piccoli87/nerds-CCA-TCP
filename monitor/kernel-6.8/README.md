@@ -49,10 +49,10 @@
 | ------------|--------------- | -------| ----- | ----|--------|--------|----|-------|-------|-------|------------------|
 |172.16.30.92 |  142.250.0.188 |  60772 |  5228 | 10  | 793322 | 290165 |  0 | 87380 | 87380 | cubic |  169516884622211 |
 
-* a) Essa conexão TCP foi estabelecida entre o IP local 172.16.30.92 e o IP remoto 142.250.0.188, usando a porta de origem 60772 e a porta de destino 5228. *
-* b) Está usando o algoritmo de congestionamento cubic. *
-* c) A janela de congestionamento atual (cwnd) está em 10 segmentos. *
-* d) O RTT médio estimado é de aproximadamente 793 ms, com variação de 290 ms. *
-* e) Nenhuma retransmissão está pendente (RET = 0). *
-* f) Os buffers de envio e recepção são 87380 bytes. *
+*a) Essa conexão TCP foi estabelecida entre o IP local 172.16.30.92 e o IP remoto 142.250.0.188, usando a porta de origem 60772 e a porta de destino 5228.*
+*b) Está usando o algoritmo de congestionamento cubic.*
+*c) A janela de congestionamento atual (cwnd) está em 10 segmentos.*
+*d) O RTT médio estimado é de aproximadamente 793 ms, com variação de 290 ms.*
+*e) Nenhuma retransmissão está pendente (RET = 0).*
+*f) Os buffers de envio e recepção são 87380 bytes.*
 

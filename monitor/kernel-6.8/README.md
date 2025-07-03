@@ -40,14 +40,16 @@
 | **RET**       | **Retransmissions Out** – Número de segmentos TCP atualmente na fila de retransmissão. Indica se houve perda ou timeout.                                 |
 | **SNDWND**    | **Send Window Size** – Tamanho do buffer de envio da aplicação (em bytes).                                                                               |
 | **RCVWND**    | **Receive Window Size** – Tamanho do buffer de recepção da aplicação (em bytes).                                                                         |
+| **TOS**       | **DSCP** 6 bits (Expedited Forwarding)                                                                                                                   |
+|               | **ECN**  2 bits                                                                                                                                          |
 | **ALG**       | **Algoritmo de Congestionamento** – Algoritmo TCP em uso (ex: `cubic`, `bbr`, `reno`).                                                                   |
 | **TIMESTAMP** | Marca de tempo (em nanossegundos) obtida via `ktime_get_ns()` no momento da leitura do socket.                                                           |
 
 ## 🧠 Exemplo interpretado:
 
-|**SADDR      |    DADDR       | SPORT  | DPORT | CWND|  SRTT  | RTTVAR | RET| SNDWND| RCVWND|  ALG  |    TIMESTAMP**   |
-| ------------|--------------- | -------| ----- | ----|--------|--------|----|-------|-------|-------|------------------|
-|172.16.30.92 |  142.250.0.188 |  60772 |  5228 | 10  | 793322 | 290165 |  0 | 87380 | 87380 | cubic |  169516884622211 |
+|**SADDR      |    DADDR       | SPORT  | DPORT | CWND|  SRTT  | RTTVAR | RET| SNDWND| RCVWND| DSCP  | ECN | ALG   |    TIMESTAMP**   |
+| ------------|--------------- | -------| ----- | ----|--------|--------|----|-------|-------|-------|-----|----------------------_---|
+|172.16.30.92 |  142.250.0.188 |  60772 |  5228 | 10  | 793322 | 290165 |  0 | 87380 | 87380 |       |     | cubic |  169516884622211 |
 
 *a) Essa conexão TCP foi estabelecida entre o IP local 172.16.30.92 e o IP remoto 142.250.0.188, usando a porta de origem 60772 e a porta de destino 5228.*
 

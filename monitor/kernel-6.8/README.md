@@ -28,6 +28,7 @@ cat /proc/tcp_metrics | tail -n 1
 **Para melhor alinhamento:**
 ```
 cat /proc/tcp_metrics | column -t
+watch -n 0.01 cat /proc/tcp_metrics
 ```
 
 **Para visualizar o cabeçalho e a última métrica, execute:**
@@ -53,7 +54,8 @@ sudo rmmod tcp_monitor
 | **CWND**      | **Congestion Window** – Tamanho atual da janela de congestionamento (em segmentos). Indica o número de segmentos que o TCP pode enviar sem receber ACKs. |
 | **SRTT**      | **Smoothed Round Trip Time** – Tempo médio de ida e volta suavizado (em microssegundos).                                                                 |
 | **RTTVAR**    | **RTT Variance** – Variância do RTT (em microssegundos), usada para estimar o intervalo de retransmissão.                                                |
-| **RET**       | **Retransmissions Out** – Número de segmentos TCP atualmente na fila de retransmissão. Indica se houve perda ou timeout.                                 |
+| **RET**       | **Retransmissions Out** – Número de segmentos TCP atualmente na fila de retransmissão. Indica se houve perda ou timeout. (valores instantâneos)          |
+| **ΔRET(1s)**  | **Accumulated Retr Out** – Número acumulado no intervalo de 1 seg de segmentos TCP                                                                       |
 | **SNDWND**    | **Send Window Size** – Tamanho do buffer de envio da aplicação (em bytes).                                                                               |
 | **RCVWND**    | **Receive Window Size** – Tamanho do buffer de recepção da aplicação (em bytes).                                                                         |
 | **TOS**       | **DSCP** 6 bits (Expedited Forwarding)                                                                                                                   |
@@ -63,9 +65,9 @@ sudo rmmod tcp_monitor
 
 ## 🧠 Exemplo interpretado:
 
-|**SADDR      |    DADDR       | SPORT  | DPORT | CWND|  SRTT  | RTTVAR | RET| SNDWND| RCVWND| DSCP  | ECN | ALG   |    TIMESTAMP**   |
-| ------------|--------------- | -------| ----- | ----|--------|--------|----|-------|-------|-------|-----|-------|------------------|
-|172.16.30.92 |  142.250.0.188 |  60772 |  5228 | 10  | 793322 | 290165 |  0 | 87380 | 87380 |   0   |  0  | cubic |  169516884622211 |
+|**SADDR      |    DADDR       | SPORT  | DPORT | CWND|  SRTT  | RTTVAR | RET| ΔRET(1s) | SNDWND| RCVWND| DSCP  | ECN | ALG   |    TIMESTAMP**   |
+| ------------|--------------- | -------| ----- | ----|--------|--------|----|----------|-------|-------|-------|-----|-------|------------------|
+|172.16.30.92 |  142.250.0.188 |  60772 |  5228 | 10  | 793322 | 290165 |  0 |     0    |  7380 | 87380 |   0   |  0  | cubic |  169516884622211 |
 
 *a) Essa conexão TCP foi estabelecida entre o IP local 172.16.30.92 e o IP remoto 142.250.0.188, usando a porta de origem 60772 e a porta de destino 5228.*
 

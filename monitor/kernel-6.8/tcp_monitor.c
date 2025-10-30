@@ -1,158 +1,266 @@
-// SPDX-License-Identifier: GPL-2.0
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/inet.h>
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
-#include <linux/net.h>
-#include <linux/in.h>
-#include <net/sock.h>
-#include <net/inet_sock.h>
-#include <net/tcp.h>
-#include <linux/nsproxy.h>
-#include <net/net_namespace.h>
+#!/usr/bin/env python3
+import subprocess
+import time
+import sys
+import os
 
-#define PROC_NAME "tcp_metrics"
+# Lista de todas as métricas disponíveis
+ALL_METRICS = [
+    "SADDR", "DADDR", "SPORT", "DPORT", "CWND", "SRTT", "RTTVAR", 
+    "RET", "SNDWND", "RCVWND", "DSCP", "ECN", "ALG", "TIMESTAMP"
+]
 
-static char *src_ip = NULL;
-static char *dst_ip = NULL;
+def get_tcp_metrics():
+    """
+    Executa o comando para obter as métricas TCP e retorna a saída
+    """
+    try:
+        # Executa o comando e captura a saída
+        result = subprocess.run(
+            ['cat', '/proc/tcp_metrics'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        return f"Erro ao executar comando: {e}"
+    except FileNotFoundError:
+        return "Erro: Arquivo /proc/tcp_metrics não encontrado"
+    except Exception as e:
+        return f"Erro inesperado: {e}"
 
-module_param(src_ip, charp, 0);
-MODULE_PARM_DESC(src_ip, "Source IP address filter");
+def filter_metrics(metrics_output, selected_metrics):
+    """
+    Filtra as métricas baseado na seleção do usuário
+    """
+    if not metrics_output.strip():
+        return metrics_output
+    
+    lines = metrics_output.strip().split('\n')
+    
+    # Se for -all, retorna todas as métricas
+    if "all" in selected_metrics:
+        return metrics_output
+    
+    # Encontra o cabeçalho e as linhas de dados
+    header_line = None
+    data_lines = []
+    
+    for line in lines:
+        if any(metric in line for metric in ALL_METRICS):
+            header_line = line
+        else:
+            data_lines.append(line)
+    
+    if not header_line:
+        return metrics_output
+    
+    # Divide o cabeçalho em colunas
+    header_parts = header_line.split()
+    
+    # Encontra os índices das colunas selecionadas
+    selected_indices = []
+    filtered_header = []
+    
+    for i, metric in enumerate(header_parts):
+        if metric in selected_metrics:
+            selected_indices.append(i)
+            filtered_header.append(metric)
+    
+    if not selected_indices:
+        return "Nenhuma métrica selecionada corresponde ao cabeçalho encontrado."
+    
+    # Filtra as linhas de dados
+    filtered_lines = []
+    for line in data_lines:
+        if line.strip():
+            parts = line.split()
+            filtered_parts = [parts[i] for i in selected_indices if i < len(parts)]
+            filtered_lines.append(' '.join(filtered_parts))
+    
+    # Monta a saída filtrada
+    result = ' '.join(filtered_header) + '\n'
+    result += '\n'.join(filtered_lines)
+    
+    return result
 
-module_param(dst_ip, charp, 0);
-MODULE_PARM_DESC(dst_ip, "Destination IP address filter");
+def display_metrics(selected_metrics=None):
+    """
+    Exibe as métricas TCP a cada segundo (com limpeza de tela)
+    """
+    if selected_metrics is None:
+        selected_metrics = ["all"]
+    
+    try:
+        while True:
+            # Limpa a tela
+            os.system('clear' if os.name == 'posix' else 'cls')
+            
+            # Obtém as métricas atuais
+            raw_metrics = get_tcp_metrics()
+            
+            # Filtra as métricas se necessário
+            if "all" in selected_metrics:
+                metrics = raw_metrics
+            else:
+                metrics = filter_metrics(raw_metrics, selected_metrics)
+            
+            # Exibe com timestamp
+            print(f"=== Métricas TCP - {time.strftime('%H:%M:%S')} ===")
+            if "all" not in selected_metrics:
+                print(f"Métricas selecionadas: {', '.join(selected_metrics)}")
+            print(metrics)
+            print("=" * 50)
+            print("Pressione Ctrl+C para sair...")
+            
+            # Aguarda 1 segundo
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        print("\n\nMonitoramento encerrado.")
+    except Exception as e:
+        print(f"Erro durante o monitoramento: {e}")
 
-static __be32 src_ip_be = 0;
-static __be32 dst_ip_be = 0;
+def display_metrics_simple(selected_metrics=None):
+    """
+    Versão alternativa que não limpa a tela, apenas adiciona novas linhas
+    """
+    if selected_metrics is None:
+        selected_metrics = ["all"]
+    
+    try:
+        print("Iniciando monitoramento de métricas TCP...")
+        if "all" not in selected_metrics:
+            print(f"Métricas selecionadas: {', '.join(selected_metrics)}")
+        print("Pressione Ctrl+C para sair\n")
+        
+        while True:
+            raw_metrics = get_tcp_metrics()
+            
+            # Filtra as métricas se necessário
+            if "all" in selected_metrics:
+                metrics = raw_metrics
+            else:
+                metrics = filter_metrics(raw_metrics, selected_metrics)
+            
+            print(f"\n--- Métricas TCP - {time.strftime('%H:%M:%S')} ---")
+            if "all" not in selected_metrics:
+                print(f"Métricas: {', '.join(selected_metrics)}")
+            print(metrics)
+            print("-" * 40)
+            
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        print("\nMonitoramento encerrado.")
 
-static struct net *monitor_netns = NULL;
+def display_metrics_sequential(selected_metrics=None):
+    """
+    Versão que imprime todas as capturas sequencialmente sem limpar tela
+    """
+    if selected_metrics is None:
+        selected_metrics = ["all"]
+    
+    try:
+        print("Iniciando monitoramento sequencial de métricas TCP...")
+        if "all" not in selected_metrics:
+            print(f"Métricas selecionadas: {', '.join(selected_metrics)}")
+        print("Todas as capturas serão exibidas sequencialmente")
+        print("Pressione Ctrl+C para sair\n")
+        
+        capture_count = 0
+        
+        while True:
+            raw_metrics = get_tcp_metrics()
+            
+            # Filtra as métricas se necessário
+            if "all" in selected_metrics:
+                metrics = raw_metrics
+            else:
+                metrics = filter_metrics(raw_metrics, selected_metrics)
+            
+            capture_count += 1
+            
+            print(f"\n--- Captura #{capture_count} - {time.strftime('%H:%M:%S')} ---")
+            if "all" not in selected_metrics:
+                print(f"Métricas: {', '.join(selected_metrics)}")
+            print(metrics)
+            print("-" * 50)
+            
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        print(f"\nMonitoramento encerrado. Total de {capture_count} capturas realizadas.")
 
-static int tcp_metrics_show(struct seq_file *m, void *v)
-{
-    struct inet_hashinfo *hashinfo = &tcp_hashinfo;
-    struct hlist_nulls_node *node;
-    struct sock *sk;
-    int i;
+def show_usage():
+    """
+    Exibe o uso correto do script
+    """
+    print("Uso: python3 monitor.py [MODO] [MÉTRICAS]")
+    print("\nModos:")
+    print("  -last     : Exibe apenas a última captura (limpa tela a cada atualização)")
+    print("  -seg      : Exibe todas as capturas sequencialmente")
+    print("  --simple  : Modo simples sem limpar tela")
+    print("  sem parâmetro: Usa o modo padrão (-last)")
+    print("\nMétricas:")
+    print("  -all      : Exibe todas as métricas (padrão)")
+    print("  Ou especifique métricas individuais: SADDR DADDR SPORT DPORT CWND SRTT")
+    print("  RTTVAR RET SNDWND RCVWND DSCP ECN ALG TIMESTAMP")
+    print("\nExemplos:")
+    print("  python3 monitor.py -last -all")
+    print("  python3 monitor.py -seg SADDR DADDR SPORT DPORT")
+    print("  python3 monitor.py --simple CWND SRTT RTTVAR")
+    print("  python3 monitor.py SADDR DADDR")
 
-    seq_puts(m, "SADDR           DADDR           SPORT DPORT CWND   SRTT    RTTVAR RET SNDWND  RCVWND   DSCP  ECN  ALG       TIMESTAMP\n");
+def parse_arguments():
+    """
+    Parse os argumentos da linha de comando
+    Retorna: (modo, lista_de_metricas)
+    """
+    if len(sys.argv) == 1:
+        return "-last", ["all"]
+    
+    # Modos disponíveis
+    modes = ["-last", "-seg", "--simple"]
+    
+    # Encontra o modo
+    selected_mode = "-last"  # padrão
+    metrics_start_index = 1
+    
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg in modes:
+            selected_mode = arg
+            metrics_start_index = i + 1
+            break
+    
+    # Coleta as métricas
+    selected_metrics = []
+    for arg in sys.argv[metrics_start_index:]:
+        if arg.upper() in ALL_METRICS or arg == "-all":
+            if arg == "-all":
+                selected_metrics = ["all"]
+                break
+            else:
+                selected_metrics.append(arg.upper())
+    
+    # Se nenhuma métrica foi especificada, usa "all"
+    if not selected_metrics:
+        selected_metrics = ["all"]
+    
+    return selected_mode, selected_metrics
 
-    if (!monitor_netns) {
-        seq_puts(m, "Error: namespace not initialized\n");
-        return 0;
-    }
-
-    rcu_read_lock();
-    for (i = 0; i <= hashinfo->ehash_mask; i++) {
-        struct hlist_nulls_head *head = &hashinfo->ehash[i].chain;
-        hlist_nulls_for_each_entry_rcu(sk, node, head, __sk_common.skc_nulls_node) {
-            struct inet_sock *inet;
-            struct tcp_sock *tp;
-            u16 sport, dport;
-            u32 cwnd, srtt, rttvar, retrans, sndwnd, rcvwnd;
-            u64 timestamp;
-            u8 tos;
-            const char *alg;
-
-            // Filtra apenas conexões IPv4, TCP estabelecido e do mesmo namespace
-            if (sk->sk_family != AF_INET)
-                continue;
-            if (sk->sk_state != TCP_ESTABLISHED)
-                continue;
-            if (sock_net(sk) != monitor_netns)
-                continue;
-
-            inet = inet_sk(sk);
-
-            // Filtro por IPs, se definidos
-            if ((src_ip_be && inet->inet_saddr != src_ip_be) ||
-                (dst_ip_be && inet->inet_daddr != dst_ip_be))
-                continue;
-
-            tp = tcp_sk(sk);
-
-            sport = ntohs(inet->inet_sport);
-            dport = ntohs(inet->inet_dport);
-            cwnd = tp->snd_cwnd;
-            srtt = tp->srtt_us >> 3;  // srtt_us is fixed point with 3 bits fraction
-            rttvar = tp->mdev_us >> 3;
-            retrans = tp->retrans_out;
-            sndwnd = sk->sk_sndbuf;
-            rcvwnd = sk->sk_rcvbuf;
-            timestamp = ktime_get_ns();
-            tos = inet->tos;
-            u8 dscp = tos >> 2;
-            u8 ecn = tos & 0x03;
-
-            alg = inet_csk(sk)->icsk_ca_ops->name;
-            if (strncmp(alg, "tcp_", 4) == 0)
-                alg += 4;  // remove o prefixo "tcp_"
-
-            seq_printf(m, "%-15pI4 %-15pI4 %5u %5u %5u %7u %7u %3u %7u %7u %4u %3u %-10s %llu\n",
-                       &inet->inet_saddr, &inet->inet_daddr,
-                       sport, dport, cwnd, srtt, rttvar, retrans, sndwnd, rcvwnd,
-                       dscp, ecn, alg, timestamp);
-        }
-    }
-    rcu_read_unlock();
-
-    return 0;
-}
-
-static int tcp_metrics_open(struct inode *inode, struct file *file)
-{
-    return single_open(file, tcp_metrics_show, NULL);
-}
-
-static const struct proc_ops tcp_metrics_fops = {
-    .proc_open = tcp_metrics_open,
-    .proc_read = seq_read,
-    .proc_lseek = seq_lseek,
-    .proc_release = single_release,
-};
-
-static int __init tcp_monitor_init(void)
-{
-    struct proc_dir_entry *entry;
-
-    pr_info("tcp_monitor: iniciando módulo...\n");
-
-    // Armazena o namespace atual do processo que carregou o módulo
-    monitor_netns = get_net(current->nsproxy->net_ns);
-
-    if (src_ip && !in4_pton(src_ip, -1, (u8 *)&src_ip_be, -1, NULL)) {
-        pr_err("tcp_monitor: IP de origem inválido: %s\n", src_ip);
-        return -EINVAL;
-    }
-
-    if (dst_ip && !in4_pton(dst_ip, -1, (u8 *)&dst_ip_be, -1, NULL)) {
-        pr_err("tcp_monitor: IP de destino inválido: %s\n", dst_ip);
-        return -EINVAL;
-    }
-
-    entry = proc_create(PROC_NAME, 0, NULL, &tcp_metrics_fops);
-    if (!entry) {
-        pr_err("tcp_monitor: falha ao criar /proc/%s\n", PROC_NAME);
-        put_net(monitor_netns);  // libera se falhar
-        return -ENOMEM;
-    }
-
-    pr_info("tcp_monitor: monitorando conexões TCP no namespace atual\n");
-    return 0;
-}
-
-static void __exit tcp_monitor_exit(void)
-{
-    remove_proc_entry(PROC_NAME, NULL);
-    if (monitor_netns)
-        put_net(monitor_netns);
-    pr_info("tcp_monitor: módulo removido\n");
-}
-
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Adaptado por ChatGPT");
-MODULE_DESCRIPTION("TCP metrics monitor (filtra por namespace de rede e identifica algoritmo)");
-
-module_init(tcp_monitor_init);
-module_exit(tcp_monitor_exit);
+if __name__ == "__main__":
+    # Parse dos argumentos
+    mode, metrics = parse_arguments()
+    
+    # Executa no modo selecionado com as métricas escolhidas
+    if mode == "-last":
+        display_metrics(metrics)
+    elif mode == "-seg":
+        display_metrics_sequential(metrics)
+    elif mode == "--simple":
+        display_metrics_simple(metrics)
+    else:
+        print(f"Modo desconhecido: {mode}")
+        show_usage()

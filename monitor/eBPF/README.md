@@ -47,11 +47,11 @@ struct flow_stats_t {
 ```
 - flow_addr_t: armazena endereço origem/destino IPv4 (u32), portas (u16) e protocolo. Observação: é só para IPv4 (não trata IPv6).
 - flow_stats_t: contém contadores/estatísticas por flow (na implementação o key do mapa será o ponteiro do struct sock). Campos:
-  -- pkts_sent, bytes_sent — acumuladores;
-  -- retransmits — contador de retransmissões;
-  -- last_state — último estado TCP observado (valores como TCP_ESTABLISHED, TCP_CLOSE etc);
-  -- last_seen_ns — timestamp (ns) do último evento;
-  -- srtt_us e rtt_us — srtt lido do kernel (o código mantém o raw e também converte com >>3, conforme comentário);
-  -- cwnd — snd_cwnd do tcp_sock.
+  - pkts_sent, bytes_sent — acumuladores;
+  - retransmits — contador de retransmissões;
+  - last_state — último estado TCP observado (valores como TCP_ESTABLISHED, TCP_CLOSE etc);
+  - last_seen_ns — timestamp (ns) do último evento;
+  - srtt_us e rtt_us — srtt lido do kernel (o código mantém o raw e também converte com >>3, conforme comentário);
+  - cwnd — snd_cwnd do tcp_sock.
 
 

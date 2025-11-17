@@ -84,11 +84,33 @@ static inline void try_fill_addr(struct flow_stats_t *s, struct sock *sk) {
 }
 ```
 - Tenta preencher os campos de endereço/porta somente se ainda não preenchidos (proto != 0 usado como flag).
-
 - Usa bpf_probe_read_kernel para ler campos seguros dentro de struct sock.
-
-- *Importante:*
+- Importante:
     - sk->__sk_common.skc_dport normalmente está em ordem de rede (__be16). O código escreve esse valor diretamente em dport sem ntohs.     - Portanto, a porta pode aparecer em byte order de rede — é necessário usar conversão (bpf_ntohs / ntohs) se for preciso o valor legível.
     - skc_num é o número local (host order na sock?) — comportamentos podem variar; sempre verificar kernel version/endianness.
     - Esse helper só trata IPv4 – não considera IPv6 (sk->__sk_common tem campos diferentes para v6).
     - Leitura direta de campos internos do kernel pode falhar ou ficar inconsistente entre versões do kernel — ver seção CO-RE abaixo.
+
+# 5) Helper try_read_tcp_metrics
+```
+static inline void try_read_tcp_metrics(struct flow_stats_t *s, struct sock *sk) {
+    struct tcp_sock *tp = (struct tcp_sock *)sk;
+
+    u32 srtt_raw = 0;
+    u32 cwnd = 0;
+
+    bpf_probe_read_kernel(&srtt_raw, sizeof(srtt_raw), &tp->srtt_us);
+    bpf_probe_read_kernel(&cwnd, sizeof(cwnd), &tp->snd_cwnd);
+
+    s->srtt_us = srtt_raw;
+    s->rtt_us = srtt_raw >> 3;
+    s->cwnd = cwnd;
+}
+```
+- Faz um cast do struct sock * para struct tcp_sock * e tenta ler srtt_us e snd_cwnd.
+- srtt_raw: o código assume que o campo do kernel pode estar escalado (historicamente o RTTY/RTO internalmente foi representado com escala, por isso o comentário e >>3).
+- Salva o srtt_raw e uma versão convertida rtt_us = srtt_raw >> 3 (aproximação).
+- cwnd é lido diretamente (é medido em segmentos MSS normalmente).
+- *Cuidados:*
+    - Nem sempre é seguro fazer cast direto (struct tcp_sock *)sk — offsets e nomes de campos podem mudar entre versões. Em programas modernos recomenda-se usar BPF CO-RE (BPF_CORE_READ) para portabilidade entre kernels.
+    - tp->srtt_us pode não existir ou mudar de nome/semântica entre versões do kernel; portanto use CO-RE ou proteja por verificações de versão.

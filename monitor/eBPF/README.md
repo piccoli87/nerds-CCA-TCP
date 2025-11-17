@@ -1,4 +1,6 @@
-# 1) Cabeçalho e compatibilidade
+# _tcp_stats_sockkey.c_
+
+## 1) Cabeçalho e compatibilidade
 ```
 `#include <uapi/linux/ptrace.h>`
 `#include <linux/skbuff.h>`
@@ -19,7 +21,7 @@
 
 - O bloco `#ifndef` garante compatibilidade: em kernels/ambientes mais antigos onde bpf_probe_read_kernel não existe, ele usa bpf_probe_read como fallback. Isso permite carregar o programa em várias versões do kernel/BPF toolchains.
 
-# 2) Estruturas de dados
+## 2) Estruturas de dados
 ```
 struct flow_addr_t {
     u32 saddr;
@@ -54,7 +56,7 @@ struct flow_stats_t {
   - srtt_us e rtt_us — srtt lido do kernel (o código mantém o raw e também converte com >>3, conforme comentário);
   - cwnd — snd_cwnd do tcp_sock.
 
-# 3) Mapa BPF
+## 3) Mapa BPF
 ```
 BPF_HASH(flow_stats, u64, struct flow_stats_t, 16384);
 ```
@@ -63,7 +65,7 @@ BPF_HASH(flow_stats, u64, struct flow_stats_t, 16384);
 - O tamanho máximo do mapa é 16384 entradas.
 - *Observação:* usar ponteiro do socket como chave é comum e eficiente, mas: ponteiros são únicos por socket enquanto o socket existir; se sockets fecharem e novos sockets alocarem a mesma addr de memória, entradas antigas podem confundir se não forem limpas.
 
-# 3) 4) Helper try_fill_addr
+## 4) Helper try_fill_addr
 ```
 static inline void try_fill_addr(struct flow_stats_t *s, struct sock *sk) {
     if (s->addr.proto != 0) return;
@@ -91,7 +93,7 @@ static inline void try_fill_addr(struct flow_stats_t *s, struct sock *sk) {
     - Esse helper só trata IPv4 – não considera IPv6 (sk->__sk_common tem campos diferentes para v6).
     - Leitura direta de campos internos do kernel pode falhar ou ficar inconsistente entre versões do kernel — ver seção CO-RE abaixo.
 
-# 5) Helper try_read_tcp_metrics
+## 5) Helper try_read_tcp_metrics
 ```
 static inline void try_read_tcp_metrics(struct flow_stats_t *s, struct sock *sk) {
     struct tcp_sock *tp = (struct tcp_sock *)sk;
@@ -115,7 +117,7 @@ static inline void try_read_tcp_metrics(struct flow_stats_t *s, struct sock *sk)
     - Nem sempre é seguro fazer cast direto (struct tcp_sock *)sk — offsets e nomes de campos podem mudar entre versões. Em programas modernos recomenda-se usar BPF CO-RE (BPF_CORE_READ) para portabilidade entre kernels.
     - tp->srtt_us pode não existir ou mudar de nome/semântica entre versões do kernel; portanto use CO-RE ou proteja por verificações de versão.
 
-# 6) Kprobe: tcp_sendmsg
+## 6) Kprobe: tcp_sendmsg
 ```
 int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk, struct msghdr *msg, size_t size) {
     if (!sk) return 0;
@@ -144,7 +146,7 @@ int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk, struct msghdr *msg
     - atualiza métricas TCP (srtt/cwnd) e timestamp (bpf_ktime_get_ns() retorna tempo monotônico em ns).
 - lookup_or_init inicializa com zero se não existir; retorna ponteiro para o valor no mapa.
 
-# 7) Kprobe: tcp_retransmit_skb
+## 7) Kprobe: tcp_retransmit_skb
 ```
 int kprobe__tcp_retransmit_skb(struct pt_regs *ctx, struct sock *sk, struct sk_buff *skb) {
     if (!sk) return 0;
@@ -167,7 +169,7 @@ int kprobe__tcp_retransmit_skb(struct pt_regs *ctx, struct sock *sk, struct sk_b
 - Incrementa contador de retransmissões e lê métricas tcp para correlacionar retransmissões com rtt/cwnd naquele momento.
 - Bom para detectar quando a retransmissão coincide com aumento de RTT ou redução de cwnd.
 
-# 8) Kprobe: tcp_set_state
+## 8) Kprobe: tcp_set_state
 ```
 int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
     if (!sk) return 0;
@@ -189,14 +191,31 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
 - Chamada quando o estado da conexão TCP muda. Útil para saber transições (ex: ESTABLISHED → CLOSE) e para correlacionar estado com srtt/cwnd/retransmits.
 - Armazena state bruto (número). Se quiser legibilidade, o usuário precisa mapear esses inteiros para constantes (p.ex. TCP_ESTABLISHED).
 
-# 9) Observações operacionais e limitações
-1. Endianess das portas: sk->__sk_common.skc_dport é normalmente __be16 (big-endian). O código grava sem conversão — isso pode levar a portas numéricas trocadas. Use bpf_ntohs() se quiser porto em host order e legível.
-2. IPv6 não tratado: o código só lê skc_rcv_saddr/skc_daddr (IPv4). Para suportar IPv6 é preciso tratar sk_v6_* ou checar sk->sk_family.
-3. Portabilidade entre kernels: acessar campos internos de struct tcp_sock diretamente (cast) pode quebrar entre versões. Recomenda-se usar CO-RE (BPF_CORE_READ) ou macros do libbpf para resolver offsets em tempo de compilação/execution.
-4. Verifier / segurança: o programa evita loops e usa apenas leituras e incrementos simples — em geral isso passa no verificador. Contudo, leituras de tcp_sock via cast podem ser recusadas dependendo de verificações de tipo/offset.
-5. Map growth / limpeza: entradas são criadas por socket pointer; o código não remove entradas quando socket fecha — pode acumular entradas para sockets mortos. Sugestão: no kprobe de tcp_set_state quando state == TCP_CLOSE (ou em inet_release), remover a entrada do mapa.
-6. Uso de contador atômico: __sync_fetch_and_add() é sintaxe aceita pelo BCC para tradução em atomics em eBPF; ok, mas considere bpf_map_update_elem em cenários diferentes ou mapas per-cpu para reduzir contention.
-7. Granularidade das métricas:
+## 9) Observações operacionais e limitações
+**1. Endianess das portas:** sk->__sk_common.skc_dport é normalmente __be16 (big-endian). O código grava sem conversão — isso pode levar a portas numéricas trocadas. Use bpf_ntohs() se quiser porto em host order e legível.
+**2. IPv6 não tratado:** o código só lê skc_rcv_saddr/skc_daddr (IPv4). Para suportar IPv6 é preciso tratar sk_v6_* ou checar sk->sk_family.
+**3. Portabilidade entre kernels:** acessar campos internos de struct tcp_sock diretamente (cast) pode quebrar entre versões. Recomenda-se usar CO-RE (BPF_CORE_READ) ou macros do libbpf para resolver offsets em tempo de compilação/execution.
+**4. Verifier / segurança:** o programa evita loops e usa apenas leituras e incrementos simples — em geral isso passa no verificador. Contudo, leituras de tcp_sock via cast podem ser recusadas dependendo de verificações de tipo/offset.
+**5. Map growth / limpeza:** entradas são criadas por socket pointer; o código não remove entradas quando socket fecha — pode acumular entradas para sockets mortos. Sugestão: no kprobe de tcp_set_state quando state == TCP_CLOSE (ou em inet_release), remover a entrada do mapa.
+**6. Uso de contador atômico:** __sync_fetch_and_add() é sintaxe aceita pelo BCC para tradução em atomics em eBPF; ok, mas considere bpf_map_update_elem em cenários diferentes ou mapas per-cpu para reduzir contention.
+**7. Granularidade das métricas:**
     - pkts_sent incrementa em tcp_sendmsg — pode não corresponder 1:1 a pacotes na wire (segmentação/TSO/GSO podem agrupar).
     - bytes_sent soma size do tcp_sendmsg — útil, mas para bytes realmente transmitidos poderia observar skb/netdev hooks.
-8. srtt_us sem garantia absoluta: campo srtt_us e a conversão >>3 são heurísticas. A representação exata do kernel muda ao longo do tempo — recomendo verificar a definição do campo srtt_us na versão do kernel alvo.
+**8. srtt_us sem garantia absoluta:** campo srtt_us e a conversão >>3 são heurísticas. A representação exata do kernel muda ao longo do tempo — recomendo verificar a definição do campo srtt_us na versão do kernel alvo.
+
+## 10) Sugestões de melhorias práticas
+**- Converter portas:** aplicar bpf_ntohs(dport) antes de armazenar.
+**- Suportar IPv6 e checar:** sk->sk_family:
+    - Para IPv6 lembrar de ler sk->sk_v6_rcv_saddr / sk->sk_v6_daddr.
+**- Usar CO-RE / BPF_CORE_READ** para portabilidade entre kernels (libbpf/more recent BPF toolchains).
+**- Limpeza de mapa:** remover entradas quando socket fecha (por exemplo, em tcp_set_state quando state == TCP_CLOSE) para evitar vazamento de entradas.
+**- Considerar per-CPU maps** para contadores de alta frequência (p.ex. BPF_PERCPU_HASH ou BPF_PERCPU_ARRAY) e reduzir contention e custo de operações atômicas.
+**- Expôr as métricas para userland:** use bpftool map dump ou um programa BCC/python para ler o mapa e traduzir valores (conversão de portas, conversão srtt).
+**- Documentar mapeamento de campos TCP:** adicionar comentários/constantes que traduzam last_state para nomes.
+
+## 11) Como ler/interpretar os dados obtidos
+- **pkts_sent** e **bytes_sent:** permitem estimar taxa emitida (diferença de bytes_sent/delta tempo).
+- **retransmits:** diretamente indica eventos de retransmissão por socket.
+- **srtt_us raw** e **rtt_us** convertido: correlacione aumento de rtt com retransmissões (o código já lê srtt nos três probes).
+- **cwnd:** indica a janela de congestionamento atual (em MSS). Queda súbita de cwnd junto a retransmissões sugere perda detectada.
+- **last_seen_ns** permite ordenar eventos e calcular deltas temporais.

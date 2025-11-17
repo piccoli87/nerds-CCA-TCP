@@ -57,9 +57,38 @@ struct flow_stats_t {
 # 3) Mapa BPF
 ```
 BPF_HASH(flow_stats, u64, struct flow_stats_t, 16384);
-``
+```
 - Declara um mapa hash chamado flow_stats com chave u64 e valor struct flow_stats_t.
 - A chave usada no código é o ponteiro do struct sock ((u64)sk), portanto cada socket tem sua entrada.
 - O tamanho máximo do mapa é 16384 entradas.
 - *Observação:* usar ponteiro do socket como chave é comum e eficiente, mas: ponteiros são únicos por socket enquanto o socket existir; se sockets fecharem e novos sockets alocarem a mesma addr de memória, entradas antigas podem confundir se não forem limpas.
 
+# 3) 4) Helper try_fill_addr
+```
+static inline void try_fill_addr(struct flow_stats_t *s, struct sock *sk) {
+    if (s->addr.proto != 0) return;
+
+    u32 saddr = 0, daddr = 0;
+    u16 sport = 0, dport = 0;
+
+    bpf_probe_read_kernel(&saddr, sizeof(saddr), &sk->__sk_common.skc_rcv_saddr);
+    bpf_probe_read_kernel(&daddr, sizeof(daddr), &sk->__sk_common.skc_daddr);
+    bpf_probe_read_kernel(&sport, sizeof(sport), &sk->__sk_common.skc_num);
+    bpf_probe_read_kernel(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
+
+    s->addr.saddr = saddr;
+    s->addr.daddr = daddr;
+    s->addr.sport = sport;
+    s->addr.dport = dport;
+    s->addr.proto = IPPROTO_TCP;
+}
+```
+- Tenta preencher os campos de endereço/porta somente se ainda não preenchidos (proto != 0 usado como flag).
+
+- Usa bpf_probe_read_kernel para ler campos seguros dentro de struct sock.
+
+- *Importante:*
+    - sk->__sk_common.skc_dport normalmente está em ordem de rede (__be16). O código escreve esse valor diretamente em dport sem ntohs.     - Portanto, a porta pode aparecer em byte order de rede — é necessário usar conversão (bpf_ntohs / ntohs) se for preciso o valor legível.
+    - skc_num é o número local (host order na sock?) — comportamentos podem variar; sempre verificar kernel version/endianness.
+    - Esse helper só trata IPv4 – não considera IPv6 (sk->__sk_common tem campos diferentes para v6).
+    - Leitura direta de campos internos do kernel pode falhar ou ficar inconsistente entre versões do kernel — ver seção CO-RE abaixo.

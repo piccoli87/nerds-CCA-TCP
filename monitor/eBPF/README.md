@@ -54,4 +54,12 @@ struct flow_stats_t {
   - srtt_us e rtt_us — srtt lido do kernel (o código mantém o raw e também converte com >>3, conforme comentário);
   - cwnd — snd_cwnd do tcp_sock.
 
+# 3) Mapa BPF
+```
+BPF_HASH(flow_stats, u64, struct flow_stats_t, 16384);
+``
+- Declara um mapa hash chamado flow_stats com chave u64 e valor struct flow_stats_t.
+- A chave usada no código é o ponteiro do struct sock ((u64)sk), portanto cada socket tem sua entrada.
+- O tamanho máximo do mapa é 16384 entradas.
+- *Observação:* usar ponteiro do socket como chave é comum e eficiente, mas: ponteiros são únicos por socket enquanto o socket existir; se sockets fecharem e novos sockets alocarem a mesma addr de memória, entradas antigas podem confundir se não forem limpas.
 

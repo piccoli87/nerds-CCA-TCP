@@ -111,6 +111,92 @@ static inline void try_read_tcp_metrics(struct flow_stats_t *s, struct sock *sk)
 - srtt_raw: o código assume que o campo do kernel pode estar escalado (historicamente o RTTY/RTO internalmente foi representado com escala, por isso o comentário e >>3).
 - Salva o srtt_raw e uma versão convertida rtt_us = srtt_raw >> 3 (aproximação).
 - cwnd é lido diretamente (é medido em segmentos MSS normalmente).
-- *Cuidados:*
+- _*Cuidados:*_
     - Nem sempre é seguro fazer cast direto (struct tcp_sock *)sk — offsets e nomes de campos podem mudar entre versões. Em programas modernos recomenda-se usar BPF CO-RE (BPF_CORE_READ) para portabilidade entre kernels.
     - tp->srtt_us pode não existir ou mudar de nome/semântica entre versões do kernel; portanto use CO-RE ou proteja por verificações de versão.
+
+# 6) Kprobe: tcp_sendmsg
+```
+int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk, struct msghdr *msg, size_t size) {
+    if (!sk) return 0;
+    u64 sk_ptr = (u64)sk;
+    struct flow_stats_t zero = {};
+    struct flow_stats_t *s = flow_stats.lookup_or_init(&sk_ptr, &zero);
+    if (!s) return 0;
+
+    try_fill_addr(s, sk);
+
+    __sync_fetch_and_add(&s->pkts_sent, 1);
+    __sync_fetch_and_add(&s->bytes_sent, (u64)size);
+
+    try_read_tcp_metrics(s, sk);
+
+    s->last_seen_ns = bpf_ktime_get_ns();
+    return 0;
+}
+```
+- Anexado via BCC (nome kprobe__tcp_sendmsg é convenção do BCC para auto-attach).
+- Para cada chamada de tcp_sendmsg,:
+    - obtém (ou cria) uma entrada no mapa usando a chave sk_ptr;
+    - preenche endereço se necessário;
+    - incrementa pkts_sent (nota: não necessariamente um pacote físico enviado na rede — tcp_sendmsg é uma função de envio de mensagem ao TCP, pode corresponder a vários segmentos dependendo do MSS/segmentação);
+    - incrementa bytes_sent com size (o parâmetro recebido pelo kernel);
+    - atualiza métricas TCP (srtt/cwnd) e timestamp (bpf_ktime_get_ns() retorna tempo monotônico em ns).
+- lookup_or_init inicializa com zero se não existir; retorna ponteiro para o valor no mapa.
+
+# 7) Kprobe: tcp_retransmit_skb
+```
+int kprobe__tcp_retransmit_skb(struct pt_regs *ctx, struct sock *sk, struct sk_buff *skb) {
+    if (!sk) return 0;
+    u64 sk_ptr = (u64)sk;
+    struct flow_stats_t zero = {};
+    struct flow_stats_t *s = flow_stats.lookup_or_init(&sk_ptr, &zero);
+    if (!s) return 0;
+
+    try_fill_addr(s, sk);
+
+    __sync_fetch_and_add(&s->retransmits, 1);
+
+    try_read_tcp_metrics(s, sk);
+
+    s->last_seen_ns = bpf_ktime_get_ns();
+    return 0;
+}
+```
+- Executa quando kernel retransmite um skb.
+- Incrementa contador de retransmissões e lê métricas tcp para correlacionar retransmissões com rtt/cwnd naquele momento.
+- Bom para detectar quando a retransmissão coincide com aumento de RTT ou redução de cwnd.
+
+# 8) Kprobe: tcp_set_state
+```
+int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
+    if (!sk) return 0;
+    u64 sk_ptr = (u64)sk;
+    struct flow_stats_t zero = {};
+    struct flow_stats_t *s = flow_stats.lookup_or_init(&sk_ptr, &zero);
+    if (!s) return 0;
+
+    try_fill_addr(s, sk);
+
+    s->last_state = state;
+
+    try_read_tcp_metrics(s, sk);
+
+    s->last_seen_ns = bpf_ktime_get_ns();
+    return 0;
+}
+```
+- Chamada quando o estado da conexão TCP muda. Útil para saber transições (ex: ESTABLISHED → CLOSE) e para correlacionar estado com srtt/cwnd/retransmits.
+- Armazena state bruto (número). Se quiser legibilidade, o usuário precisa mapear esses inteiros para constantes (p.ex. TCP_ESTABLISHED).
+
+# 9) Observações operacionais e limitações
+1. Endianess das portas: sk->__sk_common.skc_dport é normalmente __be16 (big-endian). O código grava sem conversão — isso pode levar a portas numéricas trocadas. Use bpf_ntohs() se quiser porto em host order e legível.
+2. IPv6 não tratado: o código só lê skc_rcv_saddr/skc_daddr (IPv4). Para suportar IPv6 é preciso tratar sk_v6_* ou checar sk->sk_family.
+3. Portabilidade entre kernels: acessar campos internos de struct tcp_sock diretamente (cast) pode quebrar entre versões. Recomenda-se usar CO-RE (BPF_CORE_READ) ou macros do libbpf para resolver offsets em tempo de compilação/execution.
+4. Verifier / segurança: o programa evita loops e usa apenas leituras e incrementos simples — em geral isso passa no verificador. Contudo, leituras de tcp_sock via cast podem ser recusadas dependendo de verificações de tipo/offset.
+5. Map growth / limpeza: entradas são criadas por socket pointer; o código não remove entradas quando socket fecha — pode acumular entradas para sockets mortos. Sugestão: no kprobe de tcp_set_state quando state == TCP_CLOSE (ou em inet_release), remover a entrada do mapa.
+6. Uso de contador atômico: __sync_fetch_and_add() é sintaxe aceita pelo BCC para tradução em atomics em eBPF; ok, mas considere bpf_map_update_elem em cenários diferentes ou mapas per-cpu para reduzir contention.
+7. Granularidade das métricas:
+    - pkts_sent incrementa em tcp_sendmsg — pode não corresponder 1:1 a pacotes na wire (segmentação/TSO/GSO podem agrupar).
+    - bytes_sent soma size do tcp_sendmsg — útil, mas para bytes realmente transmitidos poderia observar skb/netdev hooks.
+8. srtt_us sem garantia absoluta: campo srtt_us e a conversão >>3 são heurísticas. A representação exata do kernel muda ao longo do tempo — recomendo verificar a definição do campo srtt_us na versão do kernel alvo.

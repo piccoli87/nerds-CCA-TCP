@@ -204,14 +204,14 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
 **8. srtt_us sem garantia absoluta:** campo srtt_us e a conversão >>3 são heurísticas. A representação exata do kernel muda ao longo do tempo — recomendo verificar a definição do campo srtt_us na versão do kernel alvo.
 
 ## 10) Sugestões de melhorias práticas
-**- Converter portas:** aplicar bpf_ntohs(dport) antes de armazenar.
-**- Suportar IPv6 e checar:** sk->sk_family:
+- **Converter portas:** aplicar bpf_ntohs(dport) antes de armazenar.
+- **Suportar IPv6 e checar:** sk->sk_family:
     - Para IPv6 lembrar de ler sk->sk_v6_rcv_saddr / sk->sk_v6_daddr.
-**- Usar CO-RE / BPF_CORE_READ** para portabilidade entre kernels (libbpf/more recent BPF toolchains).
-**- Limpeza de mapa:** remover entradas quando socket fecha (por exemplo, em tcp_set_state quando state == TCP_CLOSE) para evitar vazamento de entradas.
-**- Considerar per-CPU maps** para contadores de alta frequência (p.ex. BPF_PERCPU_HASH ou BPF_PERCPU_ARRAY) e reduzir contention e custo de operações atômicas.
-**- Expôr as métricas para userland:** use bpftool map dump ou um programa BCC/python para ler o mapa e traduzir valores (conversão de portas, conversão srtt).
-**- Documentar mapeamento de campos TCP:** adicionar comentários/constantes que traduzam last_state para nomes.
+- **Usar CO-RE / BPF_CORE_READ** para portabilidade entre kernels (libbpf/more recent BPF toolchains).
+- **Limpeza de mapa:** remover entradas quando socket fecha (por exemplo, em tcp_set_state quando state == TCP_CLOSE) para evitar vazamento de entradas.
+- **Considerar per-CPU maps** para contadores de alta frequência (p.ex. BPF_PERCPU_HASH ou BPF_PERCPU_ARRAY) e reduzir contention e custo de operações atômicas.
+- **Expôr as métricas para userland:** use bpftool map dump ou um programa BCC/python para ler o mapa e traduzir valores (conversão de portas, conversão srtt).
+- **Documentar mapeamento de campos TCP:** adicionar comentários/constantes que traduzam last_state para nomes.
 
 ## 11) Como ler/interpretar os dados obtidos
 - **pkts_sent** e **bytes_sent:** permitem estimar taxa emitida (diferença de bytes_sent/delta tempo).

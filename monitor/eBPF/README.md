@@ -219,3 +219,44 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
 - **srtt_us raw** e **rtt_us** convertido: correlacione aumento de rtt com retransmissões (o código já lê srtt nos três probes).
 - **cwnd:** indica a janela de congestionamento atual (em MSS). Queda súbita de cwnd junto a retransmissões sugere perda detectada.
 - **last_seen_ns** permite ordenar eventos e calcular deltas temporais.
+
+
+# _tcp_stats_monitor_sockkey.py_
+
+## 1) Visão geral rápida
+
+O script é um monitor userland escrito com BCC (Python) que abre o mapa BPF _flow_stats_ criado pelo programa tcp_stats_sockkey.c e imprime periodicamente (a cada 1s) estatísticas por conexão TCP identificada pela chave u64 (ponteiro do struct sock).
+Ele:
+- carrega/compila o código BPF (arquivo tcp_stats_sockkey.c),
+- obtém a tabela flow_stats exposta pelo BPF,
+- itera sobre as entradas do mapa e formata as informações (IP, porta, pkts, bytes, retransmissões, RTT, cwnd, estado),
+- imprime em texto legível no terminal.
+
+## 2) Cabeçalho e imports
+```
+from bcc import BPF
+import socket, struct, time, sys
+```
+- BCC fornece a API para compilar/carregar/consultar mapas e programas BPF.
+- socket/struct usados para conversões de endereços e portas.
+- time e sys para controle de loop e saída.
+
+## 3) Constante do arquivo BPF
+```
+BPF_SOURCE = "tcp_stats_sockkey.c"
+```
+- Nome do arquivo C com o programa BPF. O script chama BPF(src_file=BPF_SOURCE) para compilar e carregar esse arquivo automaticamente. Portanto o arquivo deve estar no mesmo diretório (ou fornecer caminho completo).
+
+  ## Função _ip_ntoa_be(addr)_
+  ```
+  def ip_ntoa_be(addr):
+    try:
+        return socket.inet_ntoa(struct.pack("<I", addr))
+    except Exception:
+        return socket.inet_ntoa(struct.pack(">I", addr))
+```
+- Objetivo: converter um u32 (IPv4) lido do mapa em string "a.b.c.d".
+- Observação sobre endianness:
+    - struct.pack("<I", addr) cria bytes little-endian; inet_ntoa espera um endereço em network byte order (big-endian).
+    - A função tenta primeiro interpretar addr como little-endian; se dar erro, tenta big-endian. Isso é uma heurística porque, dependendo de como o BPF escreveu o u32, ele pode estar em ordens trocadas.
+- Risco: essa heurística resolve muitos casos, mas não garante correção para todos. Melhor abordagem é garantir explicitamente a ordem no código BPF (ex.: armazenar em network order com htonl) ou aplicar socket.ntohl no monitor.

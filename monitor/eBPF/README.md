@@ -247,16 +247,132 @@ BPF_SOURCE = "tcp_stats_sockkey.c"
 ```
 - Nome do arquivo C com o programa BPF. O script chama BPF(src_file=BPF_SOURCE) para compilar e carregar esse arquivo automaticamente. Portanto o arquivo deve estar no mesmo diretório (ou fornecer caminho completo).
 
-  ## Função _ip_ntoa_be(addr)_
-  ```
+## Função _ip_ntoa_be(addr)_
+```
   def ip_ntoa_be(addr):
     try:
         return socket.inet_ntoa(struct.pack("<I", addr))
     except Exception:
         return socket.inet_ntoa(struct.pack(">I", addr))
 ```
+
 - Objetivo: converter um u32 (IPv4) lido do mapa em string "a.b.c.d".
 - Observação sobre endianness:
     - struct.pack("<I", addr) cria bytes little-endian; inet_ntoa espera um endereço em network byte order (big-endian).
     - A função tenta primeiro interpretar addr como little-endian; se dar erro, tenta big-endian. Isso é uma heurística porque, dependendo de como o BPF escreveu o u32, ele pode estar em ordens trocadas.
 - Risco: essa heurística resolve muitos casos, mas não garante correção para todos. Melhor abordagem é garantir explicitamente a ordem no código BPF (ex.: armazenar em network order com htonl) ou aplicar socket.ntohl no monitor.
+
+## Função _port_be16_to_host(p)_
+```
+def port_be16_to_host(p):
+    try:
+        return socket.ntohs(p & 0xffff)
+    except Exception:
+        return p
+```
+- Converte u16 possivelmente em network order (big-endian) para host order, usando ntohs.
+- Faz p & 0xffff para garantir que o valor passado a ntohs seja 16 bits inteiros.
+- Observação: no código BPF original, dport provavelmente foi gravado como __be16 (network order). Então essa conversão é necessária para exibir portas corretas.
+
+## Função _state_name(state)_
+```
+def state_name(state):
+    names = { 1: "ESTABLISHED", 2: "SYN_SENT", ... 11: "CLOSING", }
+    return names.get(state, str(state))
+```
+- Mapeia valores inteiros de tcp_state para nomes legíveis.
+- Se o estado não estiver no dicionário, retorna o inteiro convertido para string.
+
+## Função principal _main()_: carregar BPF e abrir tabela
+```
+b = BPF(src_file=BPF_SOURCE)
+table = b.get_table("flow_stats")
+```
+- BPF(...) compila e carrega o programa BPF. Se ocorrer erro (falta clang, permissões, verificador rejeitou, etc.) o script imprime erro e sai.
+- b.get_table("flow_stats") obtém um objeto Table que permite iterar sobre as entradas do mapa BPF chamado flow_stats definido no código C (BPF_HASH(flow_stats,...)).
+
+### Requisitos:
+
+- rodar como root (ou via sudo) — carregar kprobes/BPF normalmente requer privilégios.
+- ter bcc/python3-bcc, clang, linux-headers, etc. instalados.
+
+## Loop principal: leitura periódica do mapa
+```
+while True:
+    if len(table) == 0:
+        print("[snapshot] sem fluxos observados ainda.")
+    else:
+        print("[snapshot]")
+
+    for k, v in table.items():
+        sk_ptr = int.from_bytes(bytes(k), byteorder="little")
+        ...
+```
+- A cada iteração (1s), verifica se o mapa está vazio e imprime "[snapshot]".
+- table.items() retorna pares (key, value):
+    - k é um objeto que implementa __bytes__(); bytes(k) converte a chave para bytes crus. Depois int.from_bytes(..., little) transforma a chave em inteiro interpretando os bytes como little-endian — corresponde à forma como a chave foi escrita no BPF (o código BPF usa u64 sk_ptr = (u64)sk), portanto aqui a leitura little-endian costuma estar correta.
+    - sk_ptr é o ponteiro do struct sock apresentado em hex ao usuário (útil para identificar sockets unicamente no mapa).
+- v é a struct flow_stats_t (converted to a Python object por BCC) — seus campos são acessíveis como atributos (v.addr, v.pkts_sent, ...).
+
+## Extração e conversões de campos
+```
+addr = v.addr
+saddr = addr.saddr
+daddr = addr.daddr
+sport = addr.sport
+dport = addr.dport
+...
+srtt_raw = getattr(v, "srtt_us", 0)
+rtt_us = getattr(v, "rtt_us", 0)
+cwnd = getattr(v, "cwnd", 0)
+```
+- Acessa campos da struct retornada pelo mapa.
+- Usa getattr(..., 0) para compatibilidade caso a struct no mapa não contenha os campos mais novos (srtt_us, rtt_us, cwnd) — útil se você usar uma versão anterior do BPF que não define esses campos.
+- Depois converte saddr/daddr em string com ip_ntoa_be, e portas com port_be16_to_host.
+- Calcula rtt_ms e srtt_ms dividindo micros por 1000.
+
+## Impressão formatada
+```
+print(
+    f"sock=0x{sk_ptr:x} {s_ip}:{s_port} -> {d_ip}:{d_port} proto={proto} "
+    f"pkts={pkts} bytes={bytes_sent} retr={retrans} "
+    f"RTT={rtt_ms:.3f}ms (srtt_raw={srtt_raw}) srtt_ms={srtt_ms:.3f}ms "
+    f"CWND={cwnd} MSS state={state_name(last_state)} last_seen_ns={last_seen_ns}"
+)
+```
+- Mostra resumo por socket:
+    - ponteiro do socket,
+    - endereço origem/destino e portas,
+    - protocolo,
+    - contadores (pkts, bytes, retransmits),
+    - RTT em ms e raw,
+    - cwnd (unidade: MSS),
+    - estado legível via state_name,
+    - last_seen_ns (timestamp em ns — como foi escrito pelo BPF: bpf_ktime_get_ns()).
+**Observação:** last_seen_ns é um timestamp monotônico em ns; para converter para tempo humano ou calcular latência desde o último evento você precisa comparar com time.monotonic_ns() ou time.time().
+
+## Controle de loop e encerramento
+- Ao finalizar com Ctrl-C, o KeyboardInterrupt é capturado para imprimir "Saindo" e terminar graciosamente.
+
+## Execução — comandos práticos
+1. Instale dependências (Debian/Ubuntu):
+```
+sudo apt update
+sudo apt install -y bpfcc-tools python3-bpfcc clang linux-headers-$(uname -r)
+```
+2. Coloque tcp_stats_sockkey.c e tcp_stats_monitor_sockkey.py no mesmo diretório.
+3. Rode com privilégios de root:
+```
+sudo python3 tcp_stats_monitor_sockkey.py
+```
+O script tentará compilar/carregar o BPF automaticamente. Se o BPF for rejeitado pelo verifier, o script imprime o erro e sai.
+
+## Exemplo de saída típica
+```
+eBPF carregado. Monitorando fluxos TCP (por sock pointer). Ctrl-C para sair.
+
+[snapshot]
+sock=0xffff9b48aab0 10.0.0.1:443 -> 10.0.0.2:53152 proto=6 pkts=42 bytes=58432 retr=1 RTT=12.345ms (srtt_raw=98765) srtt_ms=98.765ms CWND=10 MSS state=ESTABLISHED last_seen_ns=1234567890123456
+
+```
+
